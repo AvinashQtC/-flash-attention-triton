@@ -18,16 +18,17 @@ On an **NVIDIA L40S**, V2 reaches **201 TFLOP/s** in FP16 at N = 8192, which is 
 
 ## The algorithm
 
-For one (batch, head) with $Q, K, V \in \mathbb{R}^{N\times d}$, causal attention is $O = \mathrm{softmax}(QK^\top/\sqrt d + M)\,V$. FlashAttention streams K and V through on-chip SRAM in tiles and never materialises the $N\times N$ score matrix. For each new tile it updates a running max $m$, normaliser $\ell$ and un-normalised output:
+For one (batch, head) with $`Q, K, V \in \mathbb{R}^{N\times d}`$, causal attention is $`O = \mathrm{softmax}\big(QK^\top/\sqrt{d} + M\big)\, V`$. FlashAttention streams K and V through on-chip SRAM in tiles and never materialises the $`N\times N`$ score matrix. For each new tile it updates a running max $m$, normaliser $\ell$ and un-normalised output:
 
-$$
-m^{\text{new}} = \max\big(m,\ \operatorname{rowmax}(S_j)\big),\qquad
-\alpha = e^{m - m^{\text{new}}},\qquad
-\ell \leftarrow \alpha\ell + \operatorname{rowsum} e^{S_j - m^{\text{new}}},\qquad
-\mathrm{acc} \leftarrow \alpha\,\mathrm{acc} + e^{S_j - m^{\text{new}}} V_j .
-$$
+```math
+\begin{aligned}
+m^{\text{new}} &= \max\big(m,\ \mathrm{rowmax}(S_j)\big), \qquad \alpha = e^{m - m^{\text{new}}},\\
+\ell &\leftarrow \alpha \ell + \mathrm{rowsum}\big(e^{S_j - m^{\text{new}}}\big), \qquad
+\mathrm{acc} \leftarrow \alpha \cdot \mathrm{acc} + e^{S_j - m^{\text{new}}} V_j .
+\end{aligned}
+```
 
-**Base-2 softmax.** The kernels fold the softmax scale and $\log_2 e$ into one constant $c = \log_2 e/\sqrt d$ and keep $m$ in base-2 units. Each score then costs one FMA (`qk * c - m`) plus one `exp2` on the special-function unit. The stored log-sum-exp is converted back with $L = \ln 2\,(m + \log_2 \ell)$.
+**Base-2 softmax.** The kernels fold the softmax scale and $\log_2 e$ into one constant $`c = \log_2 e/\sqrt{d}`$ and keep $m$ in base-2 units. Each score then costs one FMA (`qk * c - m`) plus one `exp2` on the special-function unit. The stored log-sum-exp is converted back with $`L = \ln 2 \cdot (m + \log_2 \ell)`$.
 
 ```python
 m_new = tl.maximum(m, tl.max(s, axis=1) * qk_scale)   # qk_scale = log2(e) / sqrt(d)
